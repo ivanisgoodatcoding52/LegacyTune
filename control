@@ -1,0 +1,10 @@
+Package: com.yourname.legacytune
+Name: LegacyTune
+Version: 0.1.0
+Architecture: iphoneos-arm
+Description: A modern, offline, Spotify-inspired music player for legacy iOS devices.
+Maintainer: Your Name <you@example.com>
+Author: Your Name <you@example.com>
+Section: Music
+Depends: firmware (>= 3.0)
+Icon: file:///Applications/LegacyTune.app/icon.png
