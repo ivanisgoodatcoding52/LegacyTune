@@ -1,5 +1,5 @@
 ########################################################################
-# LegacyTune — Tier A build (ARMv6, iPhone 2G/3G, iPod touch 1st/2nd gen)
+# LegacyTune
 #
 # This Makefile targets iOS 3.0 as the minimum deployment target and
 # compiles against the iPhoneOS4.2 SDK (safe upper bound for ARMv6
