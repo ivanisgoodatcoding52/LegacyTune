@@ -1,4 +1,4 @@
-# Setting up LegacyTune
+# Setting up LegacyTune (Tier A: ARMv6, iOS 3.0–4.2.1)
 
 This covers getting from zero to a built `.deb`/`.ipa` for the ARMv6 tier
 specifically. macOS or Linux both work; Linux needs a couple of extra steps
@@ -80,10 +80,35 @@ keep around for testing.
 
 ## What's stubbed vs. real right now
 
-Everything currently compiles and launches into a working 5-tab shell with
-a tappable mini player that presents a modal "player" screen — but every
-screen's content is a placeholder label. None of the scanner, SQLite layer,
-recommendation engine, or actual playback exists yet. Reasonable next step
-after confirming this builds and installs: the SQLite schema + music
-scanner, since everything else (Home, Search, Library) depends on having a
-populated database to read from.
+**Real and working:**
+
+* `LTDatabase` — SQLite layer (songs / playlists / playlist_items schema).
+* `LTLibraryScanner` — populates `songs` from the device's on-device media
+  library via `MPMediaQuery` (covers the "existing iPod/Music library" and
+  "synced iTunes media" sources from the spec — see the scanner's header
+  comment for what's deliberately *not* covered yet: folder/file import,
+  which needs a hand-rolled ID3/MP4 tag reader).
+* `LTLibraryViewController` — real Artists/Albums/Songs/Genres browsing,
+  querying SQLite directly, with drill-down via `LTSongListViewController`.
+* `LTPlaylistStore` — full playlist CRUD: create, rename, delete, add song,
+  remove song, reorder.
+* `LTPlaylistsViewController` / `LTPlaylistDetailViewController` /
+  `LTAddSongsViewController` — create playlists (via `LTTextPromptViewController`,
+  a custom text-entry screen since `UIAlertView`'s text-input style is
+  iOS 5.0+ only), view/reorder/delete songs in a playlist, add songs from
+  the full library with a checkmark for current membership.
+
+**Still placeholder:**
+
+* Home and Search tabs.
+* `LTPlayerViewController` — no actual `AVAudioPlayer`/Audio Queue playback
+  wired up yet. Tapping a song anywhere currently does nothing (there's a
+  `TODO` comment at each tap site) — the data layer is ready for this, the
+  playback engine itself isn't built.
+* Folder/file import scanning (ID3v2/MP4 tag parsing) — only the
+  MPMediaQuery-backed sync/existing-library path is implemented.
+* Recommendations, smart playlists, artwork beyond what's cached from
+  `MPMediaItemArtwork`, and everything under Settings.
+
+Reasonable next step: the playback engine, since Library and Playlists can
+now show and organize real songs but tapping one doesn't do anything yet.

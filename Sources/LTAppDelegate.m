@@ -1,11 +1,17 @@
 #import "LTAppDelegate.h"
 #import "LTRootContainerController.h"
+#import "LTDatabase.h"
+#import "LTLibraryScanner.h"
 
 @implementation LTAppDelegate
 
 @synthesize window = _window;
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+	// Must happen before anything else touches the DB — every view
+	// controller assumes it's already open.
+	[[LTDatabase sharedDatabase] open];
+
 	self.window = [[[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]] autorelease];
 
 	_rootController = [[LTRootContainerController alloc] init];
@@ -20,6 +26,13 @@
 	}
 
 	[self.window makeKeyAndVisible];
+
+	// Kick off the library scan after the UI is already up, so cold-launch
+	// time (spec target: <2s) isn't blocked on it. The scanner posts
+	// LTLibraryScannerDidFinishNotification when done; LTLibraryViewController
+	// listens for that and reloads itself.
+	[[LTLibraryScanner sharedScanner] startScan];
+
 	return YES;
 }
 

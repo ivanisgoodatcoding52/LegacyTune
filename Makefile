@@ -22,7 +22,8 @@ include $(THEOS)/makefiles/common.mk
 APPLICATION_NAME = LegacyTune
 
 LegacyTune_FILES = $(wildcard Sources/*.m)
-LegacyTune_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore AudioToolbox AVFoundation
+LegacyTune_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore AudioToolbox AVFoundation MediaPlayer
+LegacyTune_LIBRARIES = sqlite3
 LegacyTune_CFLAGS = -Wall -Wno-unused-variable -std=gnu99 -fobjc-legacy-dispatch
 LegacyTune_INFOPLIST = Resources/Info.plist
 
