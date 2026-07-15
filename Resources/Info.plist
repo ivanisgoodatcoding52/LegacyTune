@@ -7,7 +7,7 @@
 	<key>CFBundleExecutable</key>
 	<string>LegacyTune</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.rg.legacytune</string>
+	<string>com.yourname.legacytune</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
@@ -23,6 +23,9 @@
 	<key>CFBundleVersion</key>
 	<string>1</string>
 
+	<!-- Tier A: hard floor at iOS 3.0. Do not raise this without also
+	     revisiting every "iOS 4.0+ only" guarded code path noted in
+	     the project spec (rootViewController, background audio, etc). -->
 	<key>MinimumOSVersion</key>
 	<string>3.0</string>
 
