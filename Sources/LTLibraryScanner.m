@@ -2,16 +2,19 @@
 #import "LTDatabase.h"
 #import <MediaPlayer/MediaPlayer.h>
 
-// The Sn0wCooder/qianjigui community-repackaged SDKs are known to drop a
-// handful of constant declarations from their headers even though the
-// symbol is genuinely present in the on-device MediaPlayer.framework
-// binary (it's a real, documented API — the header extraction just missed
-// it). Declaring the extern ourselves fixes the "undeclared identifier"
-// compile error without needing a different SDK; the linker resolves the
-// actual symbol from the framework stub at link time as normal. If a
-// future SDK swap makes this a duplicate-declaration error, just delete
-// this block.
-extern NSString * const MPMediaItemPropertyDateAdded;
+// This community-repackaged SDK's MediaPlayer.framework stub is missing
+// the _MPMediaItemPropertyDateAdded symbol entirely (not just its header
+// declaration — an `extern` forward-declaration compiled fine but the
+// linker had nothing to resolve it against). MPMediaItem's
+// -valueForProperty: is just a string-keyed lookup though, and Apple's
+// own MPMediaItemProperty* constants follow a fixed, documented pattern:
+// MPMediaItemProperty<Name> == @"<name>" (lowerCamelCase). So we sidestep
+// the missing framework symbol entirely and use the literal key. Worst
+// case if this were ever wrong: the lookup returns nil and date_added
+// falls back to 0 (see the nil-guard below) — no crash either way, and
+// nothing currently reads date_added for anything user-visible yet
+// (Home's "Recently Added" isn't wired up).
+static NSString *const kLTMediaItemPropertyDateAdded = @"dateAdded";
 
 NSString *const LTLibraryScannerDidFinishNotification = @"LTLibraryScannerDidFinishNotification";
 
@@ -85,7 +88,7 @@ static LTLibraryScanner *_sharedScanner = nil;
 	NSNumber *trackNumber = [item valueForProperty:MPMediaItemPropertyAlbumTrackNumber];
 	NSNumber *discNumber = [item valueForProperty:MPMediaItemPropertyDiscNumber];
 	NSNumber *duration = [item valueForProperty:MPMediaItemPropertyPlaybackDuration];
-	NSDate *dateAdded = [item valueForProperty:MPMediaItemPropertyDateAdded];
+	NSDate *dateAdded = [item valueForProperty:kLTMediaItemPropertyDateAdded];
 
 	if (title == nil) title = @"Unknown Title";
 	if (artist == nil) artist = @"Unknown Artist";
@@ -94,6 +97,11 @@ static LTLibraryScanner *_sharedScanner = nil;
 	if (trackNumber == nil) trackNumber = [NSNumber numberWithInt:0];
 	if (discNumber == nil) discNumber = [NSNumber numberWithInt:0];
 	if (duration == nil) duration = [NSNumber numberWithDouble:0];
+
+	// Message-to-nil returning a double is fine on this runtime/ABI in
+	// practice, but given how many toolchain surprises this project has
+	// already hit, don't lean on it — guard explicitly.
+	NSTimeInterval dateAddedInterval = (dateAdded != nil) ? [dateAdded timeIntervalSince1970] : 0.0;
 
 	NSString *artworkPath = [self cacheArtworkForItem:item persistentIDString:persistentID];
 
@@ -108,7 +116,7 @@ static LTLibraryScanner *_sharedScanner = nil;
 	} else {
 		NSMutableArray *args = [NSMutableArray arrayWithObjects:persistentID, title, artist, album, genre, trackNumber, discNumber, duration, nil];
 		[args addObject:(artworkPath ? artworkPath : (id)[NSNull null])];
-		[args addObject:[NSNumber numberWithDouble:[dateAdded timeIntervalSince1970]]];
+		[args addObject:[NSNumber numberWithDouble:dateAddedInterval]];
 
 		[db executeUpdate:@"INSERT INTO songs (persistent_id, title, artist, album, genre, track_number, disc_number, duration, artwork_path, date_added, play_count, skip_count, favorite, rating) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0)"
 			withArguments:args];
