@@ -133,7 +133,10 @@ static LTPlaylistStore *_sharedStore = nil;
 	// Simplest correct approach at this data scale: rewrite every
 	// sort_order value for the playlist. Fine for realistic playlist
 	// sizes; would want a smarter partial-renumbering scheme if playlists
-	// grow into the thousands of tracks.
+	// grow into the thousands of tracks. Wrapped in a transaction so N
+	// UPDATEs cost one fsync instead of N (same principle as the library
+	// scanner's batch upsert).
+	[db beginTransaction];
 	NSInteger sortOrder = 0;
 	for (NSDictionary *row in mutableRows) {
 		[db executeUpdate:@"UPDATE playlist_items SET sort_order = ? WHERE id = ?"
@@ -143,6 +146,7 @@ static LTPlaylistStore *_sharedStore = nil;
 				nil]];
 		sortOrder++;
 	}
+	[db commitTransaction];
 }
 
 @end

@@ -11,10 +11,20 @@ typedef enum {
 	LTLibraryModeGenres
 } LTLibraryMode;
 
+static const NSUInteger kLTSongsPageSize = 100;
+// Start fetching the next page once the user scrolls within this many
+// rows of the end of what's currently loaded, so the next page is
+// usually ready before they actually hit the bottom.
+static const NSUInteger kLTSongsPrefetchThreshold = 20;
+
 @interface LTLibraryViewController (Private)
-- (void)reloadForCurrentMode;
 - (void)modeChanged;
 - (void)scannerDidFinish:(NSNotification *)notification;
+- (void)ensureCurrentModeLoaded;
+- (NSArray *)cachedGroupedTitlesForCurrentMode;
+- (void)loadGroupedTitlesForCurrentModeIfNeeded;
+- (void)resetSongsPaging;
+- (void)loadNextSongsPage;
 @end
 
 @implementation LTLibraryViewController
@@ -23,6 +33,7 @@ typedef enum {
 	self = [super init];
 	if (self) {
 		self.title = @"Library";
+		_groupedTitlesCache = [[NSMutableDictionary alloc] init];
 		[[NSNotificationCenter defaultCenter] addObserver:self
 			selector:@selector(scannerDidFinish:)
 			name:LTLibraryScannerDidFinishNotification
@@ -55,75 +66,114 @@ typedef enum {
 
 - (void)viewWillAppear:(BOOL)animated {
 	[super viewWillAppear:animated];
-	[self reloadForCurrentMode];
+	// Cheap on every appearance: just ensures *something* is loaded for
+	// the current mode. Does NOT re-query if we already have data —
+	// that's the whole point of the cache.
+	[self ensureCurrentModeLoaded];
 }
 
 - (void)modeChanged {
-	[self reloadForCurrentMode];
+	[self ensureCurrentModeLoaded];
+	[_tableView reloadData];
 }
 
 - (void)scannerDidFinish:(NSNotification *)notification {
-	[self reloadForCurrentMode];
+	// The library actually changed — invalidate everything and reload
+	// whatever mode is currently visible. All OTHER modes just get
+	// dropped from cache and will re-query lazily next time the user
+	// switches to them, rather than eagerly re-querying four separate
+	// modes for one notification.
+	[_groupedTitlesCache removeAllObjects];
+	[self resetSongsPaging];
+	[self ensureCurrentModeLoaded];
+	[_tableView reloadData];
 }
 
-- (void)reloadForCurrentMode {
-	LTDatabase *db = [LTDatabase sharedDatabase];
+- (void)ensureCurrentModeLoaded {
+	if (_modeControl.selectedSegmentIndex == LTLibraryModeSongs) {
+		if (_songsPage == nil) {
+			[self resetSongsPaging];
+			[self loadNextSongsPage];
+		}
+	} else {
+		[self loadGroupedTitlesForCurrentModeIfNeeded];
+	}
+}
 
-	[_groupedTitles release];
-	[_songs release];
-	_groupedTitles = nil;
-	_songs = nil;
+- (NSArray *)cachedGroupedTitlesForCurrentMode {
+	return [_groupedTitlesCache objectForKey:[NSNumber numberWithInteger:_modeControl.selectedSegmentIndex]];
+}
 
-	switch (_modeControl.selectedSegmentIndex) {
-		case LTLibraryModeArtists: {
-			NSArray *rows = [db executeQuery:@"SELECT DISTINCT artist FROM songs ORDER BY artist COLLATE NOCASE ASC" withArguments:nil];
-			NSMutableArray *titles = [NSMutableArray arrayWithCapacity:[rows count]];
-			for (NSDictionary *row in rows) {
-				[titles addObject:[row objectForKey:@"artist"]];
-			}
-			_groupedTitles = [titles retain];
-			break;
-		}
-		case LTLibraryModeAlbums: {
-			NSArray *rows = [db executeQuery:@"SELECT DISTINCT album FROM songs ORDER BY album COLLATE NOCASE ASC" withArguments:nil];
-			NSMutableArray *titles = [NSMutableArray arrayWithCapacity:[rows count]];
-			for (NSDictionary *row in rows) {
-				[titles addObject:[row objectForKey:@"album"]];
-			}
-			_groupedTitles = [titles retain];
-			break;
-		}
-		case LTLibraryModeGenres: {
-			NSArray *rows = [db executeQuery:@"SELECT DISTINCT genre FROM songs WHERE genre != '' ORDER BY genre COLLATE NOCASE ASC" withArguments:nil];
-			NSMutableArray *titles = [NSMutableArray arrayWithCapacity:[rows count]];
-			for (NSDictionary *row in rows) {
-				[titles addObject:[row objectForKey:@"genre"]];
-			}
-			_groupedTitles = [titles retain];
-			break;
-		}
-		case LTLibraryModeSongs:
-		default: {
-			NSArray *rows = [db executeQuery:@"SELECT * FROM songs ORDER BY title COLLATE NOCASE ASC" withArguments:nil];
-			NSMutableArray *songs = [NSMutableArray arrayWithCapacity:[rows count]];
-			for (NSDictionary *row in rows) {
-				[songs addObject:[LTSong songWithRow:row]];
-			}
-			_songs = [songs retain];
-			break;
-		}
+- (void)loadGroupedTitlesForCurrentModeIfNeeded {
+	NSNumber *modeKey = [NSNumber numberWithInteger:_modeControl.selectedSegmentIndex];
+	if ([_groupedTitlesCache objectForKey:modeKey] != nil) {
+		return; // already cached — this is the fast path for a tab switch back
 	}
 
-	[_tableView reloadData];
+	LTDatabase *db = [LTDatabase sharedDatabase];
+	NSString *column = nil;
+	switch (_modeControl.selectedSegmentIndex) {
+		case LTLibraryModeArtists: column = @"artist"; break;
+		case LTLibraryModeAlbums:  column = @"album";  break;
+		case LTLibraryModeGenres:  column = @"genre";  break;
+		default: return;
+	}
+
+	// COLLATE NOCASE here matches the idx_songs_<column>_nocase indexes
+	// created in LTDatabase, so this DISTINCT + ORDER BY is satisfied
+	// directly from the index rather than requiring a full in-memory sort.
+	NSString *sql = [NSString stringWithFormat:
+		@"SELECT DISTINCT %@ FROM songs WHERE %@ != '' ORDER BY %@ COLLATE NOCASE ASC", column, column, column];
+	NSArray *rows = [db executeQuery:sql withArguments:nil];
+
+	NSMutableArray *titles = [NSMutableArray arrayWithCapacity:[rows count]];
+	for (NSDictionary *row in rows) {
+		[titles addObject:[row objectForKey:column]];
+	}
+
+	[_groupedTitlesCache setObject:titles forKey:modeKey];
+}
+
+- (void)resetSongsPaging {
+	[_songsPage release];
+	_songsPage = nil;
+	_hasMoreSongs = YES;
+	_isLoadingMoreSongs = NO;
+}
+
+- (void)loadNextSongsPage {
+	if (_isLoadingMoreSongs || !_hasMoreSongs) {
+		return;
+	}
+	_isLoadingMoreSongs = YES;
+
+	if (_songsPage == nil) {
+		_songsPage = [[NSMutableArray alloc] init];
+	}
+
+	NSUInteger offset = [_songsPage count];
+	NSString *sql = @"SELECT * FROM songs ORDER BY title COLLATE NOCASE ASC LIMIT ? OFFSET ?";
+	NSArray *args = [NSArray arrayWithObjects:
+		[NSNumber numberWithUnsignedInteger:kLTSongsPageSize],
+		[NSNumber numberWithUnsignedInteger:offset],
+		nil];
+
+	NSArray *rows = [[LTDatabase sharedDatabase] executeQuery:sql withArguments:args];
+	for (NSDictionary *row in rows) {
+		[_songsPage addObject:[LTSong songWithRow:row]];
+	}
+
+	_hasMoreSongs = ([rows count] == kLTSongsPageSize);
+	_isLoadingMoreSongs = NO;
 }
 
 #pragma mark - UITableViewDataSource
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
 	if (_modeControl.selectedSegmentIndex == LTLibraryModeSongs) {
-		return [_songs count];
+		return [_songsPage count];
 	}
-	return [_groupedTitles count];
+	return [[self cachedGroupedTitlesForCurrentMode] count];
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -138,12 +188,12 @@ typedef enum {
 	}
 
 	if (_modeControl.selectedSegmentIndex == LTLibraryModeSongs) {
-		LTSong *song = [_songs objectAtIndex:indexPath.row];
+		LTSong *song = [_songsPage objectAtIndex:indexPath.row];
 		cell.textLabel.text = song.title;
 		cell.detailTextLabel.text = song.artist;
 		cell.accessoryType = UITableViewCellAccessoryNone;
 	} else {
-		cell.textLabel.text = [_groupedTitles objectAtIndex:indexPath.row];
+		cell.textLabel.text = [[self cachedGroupedTitlesForCurrentMode] objectAtIndex:indexPath.row];
 		cell.detailTextLabel.text = nil;
 		cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
 	}
@@ -152,6 +202,30 @@ typedef enum {
 }
 
 #pragma mark - UITableViewDelegate
+
+- (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
+	if (_modeControl.selectedSegmentIndex != LTLibraryModeSongs) {
+		return;
+	}
+	if (!_hasMoreSongs || _isLoadingMoreSongs) {
+		return;
+	}
+
+	NSUInteger loadedCount = [_songsPage count];
+	if (indexPath.row + kLTSongsPrefetchThreshold >= loadedCount) {
+		NSUInteger countBefore = loadedCount;
+		[self loadNextSongsPage];
+		NSUInteger countAfter = [_songsPage count];
+
+		if (countAfter > countBefore) {
+			NSMutableArray *newIndexPaths = [NSMutableArray arrayWithCapacity:(countAfter - countBefore)];
+			for (NSUInteger i = countBefore; i < countAfter; i++) {
+				[newIndexPaths addObject:[NSIndexPath indexPathForRow:i inSection:0]];
+			}
+			[tableView insertRowsAtIndexPaths:newIndexPaths withRowAnimation:UITableViewRowAnimationNone];
+		}
+	}
+}
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
 	[tableView deselectRowAtIndexPath:indexPath animated:YES];
@@ -169,7 +243,7 @@ typedef enum {
 		default: break;
 	}
 
-	NSString *filterValue = [_groupedTitles objectAtIndex:indexPath.row];
+	NSString *filterValue = [[self cachedGroupedTitlesForCurrentMode] objectAtIndex:indexPath.row];
 
 	LTSongListViewController *songList = [[LTSongListViewController alloc]
 		initWithFilterColumn:filterColumn value:filterValue title:filterValue];
@@ -181,8 +255,8 @@ typedef enum {
 	[[NSNotificationCenter defaultCenter] removeObserver:self];
 	[_modeControl release];
 	[_tableView release];
-	[_groupedTitles release];
-	[_songs release];
+	[_groupedTitlesCache release];
+	[_songsPage release];
 	[super dealloc];
 }
 

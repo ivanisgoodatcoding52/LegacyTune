@@ -117,33 +117,48 @@ keep around for testing.
 
 **Real and working:**
 
-* `LTDatabase` — SQLite layer (songs / playlists / playlist_items schema).
-* `LTLibraryScanner` — populates `songs` from the device's on-device media
-  library via `MPMediaQuery` (covers the "existing iPod/Music library" and
-  "synced iTunes media" sources from the spec — see the scanner's header
-  comment for what's deliberately *not* covered yet: folder/file import,
-  which needs a hand-rolled ID3/MP4 tag reader).
-* `LTLibraryViewController` — real Artists/Albums/Songs/Genres browsing,
-  querying SQLite directly, with drill-down via `LTSongListViewController`.
-* `LTPlaylistStore` — full playlist CRUD: create, rename, delete, add song,
-  remove song, reorder.
-* `LTPlaylistsViewController` / `LTPlaylistDetailViewController` /
-  `LTAddSongsViewController` — create playlists (via `LTTextPromptViewController`,
-  a custom text-entry screen since `UIAlertView`'s text-input style is
-  iOS 5.0+ only), view/reorder/delete songs in a playlist, add songs from
-  the full library with a checkmark for current membership.
+* `LTDatabase` — SQLite layer with NOCASE-collated indexes matching how
+  the app actually queries (case-insensitive alphabetical browsing),
+  tuned pragmas (`synchronous=NORMAL`, `temp_store=MEMORY`, a busy
+  timeout), transaction helpers, and a prepared-statement batch-upsert
+  path used by the scanner.
+* `LTLibraryScanner` — populates `songs` from the on-device media library
+  via `MPMediaQuery`. Runs entirely on a background thread with its own
+  DB connection; the whole scan is one transaction; artwork PNG encoding
+  never touches the main thread. (Earlier version of this class did all
+  of that per-song on the main thread — that was the freeze.)
+* `LTLibraryViewController` — Artists/Albums/Songs/Genres browsing.
+  Per-mode results are cached and only re-fetched when the scanner
+  reports new data, not on every tab switch. Songs mode is paginated
+  (100 at a time, loaded as you scroll) instead of loading the whole
+  library into memory at once.
+* `LTPlaylistStore` / playlist screens — unchanged functionally, reorder
+  writes now wrapped in a transaction too.
+* `LTSearchViewController` — real instant search across title/artist/
+  album/genre, debounced (250ms), running on its own background DB
+  connection with stale-result discarding so fast typing never blocks or
+  shows out-of-order results.
+* `LTSettingsViewController` — real: rescan library, clear artwork cache
+  (with live cache size), song/playlist counts, reset database (with
+  confirmation), version/build-tier info. Honestly labeled about what's
+  NOT here yet (see its footer text) rather than showing dead controls
+  for unbuilt features.
 
 **Still placeholder:**
 
-* Home and Search tabs.
-* `LTPlayerViewController` — no actual `AVAudioPlayer`/Audio Queue playback
-  wired up yet. Tapping a song anywhere currently does nothing (there's a
-  `TODO` comment at each tap site) — the data layer is ready for this, the
-  playback engine itself isn't built.
-* Folder/file import scanning (ID3v2/MP4 tag parsing) — only the
-  MPMediaQuery-backed sync/existing-library path is implemented.
-* Recommendations, smart playlists, artwork beyond what's cached from
-  `MPMediaItemArtwork`, and everything under Settings.
+* Home tab — deliberately untouched, custom design coming separately.
+* `LTPlayerViewController` — no actual playback engine wired up yet.
+  Tapping a song anywhere is still a no-op (`TODO` at each tap site).
+* Folder/file import scanning (ID3v2/MP4 tag parsing).
+* Theme engine, recommendations/smart playlists.
 
-Reasonable next step: the playback engine, since Library and Playlists can
-now show and organize real songs but tapping one doesn't do anything yet.
+**A correction from an earlier pass:** an earlier version of this project
+used the deprecated `-createDirectoryAtPath:attributes:` (with a pragma to
+silence the deprecation warning) under the assumption that the modern
+`-createDirectoryAtPath:withIntermediateDirectories:attributes:error:` was
+iOS 5.0+ only. That was wrong — the modern method has been available
+since iOS 2.0. Fixed in `LTLibraryScanner.m`; no pragma needed there
+anymore.
+
+Reasonable next step: the playback engine, since Library/Search can now
+show real songs fast but tapping one still does nothing.

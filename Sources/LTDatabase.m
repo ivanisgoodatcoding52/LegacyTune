@@ -1,25 +1,21 @@
 #import "LTDatabase.h"
 #import <string.h>
 
-// Not defined in the older sqlite3.h shipped in legacy iOS SDKs' usr/include
-// in every case — define it ourselves rather than depend on it being there.
 #ifndef SQLITE_TRANSIENT
 #define SQLITE_TRANSIENT ((sqlite3_destructor_type)-1)
 #endif
 
 static NSString *const kLTDatabaseFileName = @"LegacyTune.sqlite";
 
-// NOTE ON SCHEMA SHAPE: the original product spec called for fully
-// normalized Artists/Albums/Genres tables. This first pass denormalizes
-// artist/album/genre onto the songs row instead (plain TEXT columns,
-// grouped with GROUP BY / DISTINCT for browsing). That's a deliberate
-// scope cut to get Library + Playlists working end-to-end quickly — it's
-// still fully browsable and queryable, it just can't yet hold per-album
-// or per-artist data that isn't derivable from the songs themselves (e.g.
-// a manually-edited album release year that differs from any one track,
-// or artist bio-like aggregate fields). Normalizing into separate tables
-// with foreign keys is a reasonable follow-up once Home/recommendations
-// need that richer structure.
+// NOTE ON SCHEMA SHAPE: artist/album/genre are denormalized TEXT columns
+// on songs rather than separate normalized tables (see project notes) —
+// deliberate scope cut, still fully browsable/queryable via GROUP BY /
+// DISTINCT. The indexes below are COLLATE NOCASE to match how the app
+// actually queries this data (case-insensitive alphabetical browsing) —
+// a plain BINARY-collated index can't be used by SQLite to satisfy an
+// "ORDER BY x COLLATE NOCASE" query, so without this the optimizer falls
+// back to a full sort in memory/temp storage on every browse, which is
+// exactly the kind of thing that stalls a slow single-core ARMv6 chip.
 static NSString *const kLTSchemaSQL =
 	@"CREATE TABLE IF NOT EXISTS songs ("
 	"  id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -39,10 +35,18 @@ static NSString *const kLTSchemaSQL =
 	"  favorite INTEGER DEFAULT 0,"
 	"  rating INTEGER DEFAULT 0"
 	");"
-	"CREATE INDEX IF NOT EXISTS idx_songs_artist ON songs(artist);"
-	"CREATE INDEX IF NOT EXISTS idx_songs_album ON songs(album);"
-	"CREATE INDEX IF NOT EXISTS idx_songs_genre ON songs(genre);"
-	"CREATE INDEX IF NOT EXISTS idx_songs_title ON songs(title);"
+	// Old plain-BINARY indexes from before this optimization pass, if
+	// they exist on an installed copy's DB file — drop them so we're not
+	// carrying dead weight (disk space + write overhead maintaining an
+	// index nothing queries against anymore).
+	"DROP INDEX IF EXISTS idx_songs_artist;"
+	"DROP INDEX IF EXISTS idx_songs_album;"
+	"DROP INDEX IF EXISTS idx_songs_genre;"
+	"DROP INDEX IF EXISTS idx_songs_title;"
+	"CREATE INDEX IF NOT EXISTS idx_songs_artist_nocase ON songs(artist COLLATE NOCASE);"
+	"CREATE INDEX IF NOT EXISTS idx_songs_album_nocase ON songs(album COLLATE NOCASE);"
+	"CREATE INDEX IF NOT EXISTS idx_songs_genre_nocase ON songs(genre COLLATE NOCASE);"
+	"CREATE INDEX IF NOT EXISTS idx_songs_title_nocase ON songs(title COLLATE NOCASE);"
 	""
 	"CREATE TABLE IF NOT EXISTS playlists ("
 	"  id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -95,9 +99,26 @@ static LTDatabase *_sharedDatabase = nil;
 		return NO;
 	}
 
-	// Foreign key enforcement is OFF by default per-connection in sqlite3
-	// and must be turned on every time a connection is opened.
+	// Wait up to 3s for a lock instead of failing instantly with
+	// SQLITE_BUSY. Relevant when a background LTDatabase instance (the
+	// scanner, background search) briefly overlaps with the main-thread
+	// +sharedDatabase connection — bounded stall instead of a hard error.
+	sqlite3_busy_timeout(_db, 3000);
+
 	sqlite3_exec(_db, "PRAGMA foreign_keys = ON;", NULL, NULL, NULL);
+
+	// synchronous=NORMAL trades a small amount of crash-safety (in the
+	// rare case of an OS-level crash, not an app crash) for meaningfully
+	// faster writes than the default FULL — reasonable for a local music
+	// index that gets rebuilt from the device's media library on rescan
+	// anyway, not irreplaceable user data.
+	sqlite3_exec(_db, "PRAGMA synchronous = NORMAL;", NULL, NULL, NULL);
+
+	// Keep temporary b-trees (used for ORDER BY / GROUP BY when an index
+	// can't satisfy them directly) in RAM instead of a temp file — much
+	// faster on the slow flash storage in this hardware class, and the
+	// memory cost is negligible for the query sizes this app runs.
+	sqlite3_exec(_db, "PRAGMA temp_store = MEMORY;", NULL, NULL, NULL);
 
 	char *errorMessage = NULL;
 	result = sqlite3_exec(_db, [kLTSchemaSQL UTF8String], NULL, NULL, &errorMessage);
@@ -219,6 +240,120 @@ static LTDatabase *_sharedDatabase = nil;
 
 - (sqlite3_int64)lastInsertRowId {
 	return sqlite3_last_insert_rowid(_db);
+}
+
+- (BOOL)beginTransaction {
+	return [self executeUpdate:@"BEGIN IMMEDIATE;" withArguments:nil];
+}
+
+- (BOOL)commitTransaction {
+	return [self executeUpdate:@"COMMIT;" withArguments:nil];
+}
+
+- (BOOL)rollbackTransaction {
+	return [self executeUpdate:@"ROLLBACK;" withArguments:nil];
+}
+
+- (void)upsertSongs:(NSArray *)songDicts {
+	if (_db == NULL) {
+		NSLog(@"[LTDatabase] upsertSongs: called before -open");
+		return;
+	}
+	if ([songDicts count] == 0) {
+		return;
+	}
+
+	if (![self beginTransaction]) {
+		NSLog(@"[LTDatabase] upsertSongs: failed to begin transaction, aborting batch");
+		return;
+	}
+
+	// Prepared once, reused for every row via sqlite3_reset +
+	// sqlite3_clear_bindings instead of re-preparing SQL text per row.
+	// Re-preparing thousands of times has real, measurable overhead —
+	// this is the difference between "compile this query" happening once
+	// vs. once per song in the library.
+	sqlite3_stmt *selectStmt = NULL;
+	sqlite3_stmt *insertStmt = NULL;
+	sqlite3_stmt *updateStmt = NULL;
+
+	const char *selectSQL = "SELECT id FROM songs WHERE persistent_id = ?";
+	const char *insertSQL = "INSERT INTO songs (persistent_id, title, artist, album, genre, track_number, disc_number, duration, artwork_path, date_added, play_count, skip_count, favorite, rating) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0)";
+	const char *updateSQL = "UPDATE songs SET title=?, artist=?, album=?, genre=?, track_number=?, disc_number=?, duration=?, artwork_path=? WHERE id=?";
+
+	if (sqlite3_prepare_v2(_db, selectSQL, -1, &selectStmt, NULL) != SQLITE_OK ||
+		sqlite3_prepare_v2(_db, insertSQL, -1, &insertStmt, NULL) != SQLITE_OK ||
+		sqlite3_prepare_v2(_db, updateSQL, -1, &updateStmt, NULL) != SQLITE_OK) {
+		NSLog(@"[LTDatabase] upsertSongs: failed to prepare statements: %s", sqlite3_errmsg(_db));
+		if (selectStmt) sqlite3_finalize(selectStmt);
+		if (insertStmt) sqlite3_finalize(insertStmt);
+		if (updateStmt) sqlite3_finalize(updateStmt);
+		[self rollbackTransaction];
+		return;
+	}
+
+	for (NSDictionary *song in songDicts) {
+		NSString *persistentID = [song objectForKey:@"persistentID"];
+
+		sqlite3_reset(selectStmt);
+		sqlite3_clear_bindings(selectStmt);
+		sqlite3_bind_text(selectStmt, 1, [persistentID UTF8String], -1, SQLITE_TRANSIENT);
+
+		sqlite3_int64 existingId = 0;
+		BOOL exists = NO;
+		if (sqlite3_step(selectStmt) == SQLITE_ROW) {
+			existingId = sqlite3_column_int64(selectStmt, 0);
+			exists = YES;
+		}
+
+		NSString *title = [song objectForKey:@"title"];
+		NSString *artist = [song objectForKey:@"artist"];
+		NSString *album = [song objectForKey:@"album"];
+		NSString *genre = [song objectForKey:@"genre"];
+		NSNumber *trackNumber = [song objectForKey:@"trackNumber"];
+		NSNumber *discNumber = [song objectForKey:@"discNumber"];
+		NSNumber *duration = [song objectForKey:@"duration"];
+		id artworkPath = [song objectForKey:@"artworkPath"]; // NSString or NSNull
+
+		sqlite3_stmt *targetStmt = exists ? updateStmt : insertStmt;
+		sqlite3_reset(targetStmt);
+		sqlite3_clear_bindings(targetStmt);
+
+		int col = 1;
+		if (!exists) {
+			sqlite3_bind_text(targetStmt, col++, [persistentID UTF8String], -1, SQLITE_TRANSIENT);
+		}
+		sqlite3_bind_text(targetStmt, col++, [title UTF8String], -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(targetStmt, col++, [artist UTF8String], -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(targetStmt, col++, [album UTF8String], -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(targetStmt, col++, [genre UTF8String], -1, SQLITE_TRANSIENT);
+		sqlite3_bind_int64(targetStmt, col++, [trackNumber longLongValue]);
+		sqlite3_bind_int64(targetStmt, col++, [discNumber longLongValue]);
+		sqlite3_bind_double(targetStmt, col++, [duration doubleValue]);
+
+		if ([artworkPath isKindOfClass:[NSString class]]) {
+			sqlite3_bind_text(targetStmt, col++, [(NSString *)artworkPath UTF8String], -1, SQLITE_TRANSIENT);
+		} else {
+			sqlite3_bind_null(targetStmt, col++);
+		}
+
+		if (!exists) {
+			NSNumber *dateAdded = [song objectForKey:@"dateAdded"];
+			sqlite3_bind_double(targetStmt, col++, [dateAdded doubleValue]);
+		} else {
+			sqlite3_bind_int64(targetStmt, col++, existingId);
+		}
+
+		if (sqlite3_step(targetStmt) != SQLITE_DONE) {
+			NSLog(@"[LTDatabase] upsertSongs: step failed for '%@': %s", title, sqlite3_errmsg(_db));
+		}
+	}
+
+	sqlite3_finalize(selectStmt);
+	sqlite3_finalize(insertStmt);
+	sqlite3_finalize(updateStmt);
+
+	[self commitTransaction];
 }
 
 - (void)dealloc {
