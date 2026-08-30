@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>LegacyTune</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.yourname.legacytune</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>LegacyTune</string>
+	<key>CFBundleDisplayName</key>
+	<string>LegacyTune</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleSignature</key>
+	<string>????</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.2</string>
+	<key>CFBundleVersion</key>
+	<string>2</string>
+
+	<!-- Tier B floor: iOS 6.0. Deliberately higher than Tier A's 3.0 —
+	     see the note at the top of this tier's Makefile for why the
+	     shared source isn't being modernized to rely on this. -->
+	<key>MinimumOSVersion</key>
+	<string>6.0</string>
+
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+
+	<!-- 1 = iPhone/iPod touch, 2 = iPad. Tier A stayed iPhone-only (no
+	     ARMv6 iPad ever existed); this is the tier that actually needs
+	     both. -->
+	<key>UIDeviceFamily</key>
+	<array><integer>1</integer><integer>2</integer></array>
+
+	<key>UIStatusBarStyle</key>
+	<string>UIStatusBarStyleBlackOpaque</string>
+
+	<!-- iPhone/iPod touch: portrait-only, unchanged from Tier A. -->
+	<key>UISupportedInterfaceOrientations</key>
+	<array><string>UIInterfaceOrientationPortrait</string></array>
+
+	<!-- iPad: ALSO portrait-only for now, deliberately matching iPhone —
+	     NOT because iPad users don't expect rotation, but because
+	     enabling landscape here without any actual rotation-adaptation
+	     logic in the UI (every screen sizes its views once from
+	     applicationFrame at load time, with no
+	     -willRotateToInterfaceOrientation: or re-layout-on-rotation
+	     handling anywhere in the shared source) would ship something
+	     that LOOKS supported but is untested and likely renders broken —
+	     clipped content, misaligned controls. Shipping "doesn't rotate"
+	     honestly is better than shipping "rotates into a broken layout."
+	     Revisit once landscape is actually built and verified. -->
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array><string>UIInterfaceOrientationPortrait</string></array>
+
+	<key>CFBundleIconFiles</key>
+	<array><string>icon.png</string><string>icon@2x.png</string><string>icon-72.png</string><string>icon-76.png</string></array>
+</dict>
+</plist>

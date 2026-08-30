@@ -1,0 +1,10 @@
+Package: com.yourname.legacytune
+Name: LegacyTune
+Version: 0.2.0
+Architecture: iphoneos-arm
+Description: A modern, offline, Spotify-inspired music player for legacy iOS devices. This package targets iPhone 3GS+, iPod touch 3rd gen+, and iPad (iOS 6.0+) — see the separate Tier A package for iPhone 2G/3G and iPod touch 1st/2nd gen (iOS 3.0+).
+Maintainer: Your Name <you@example.com>
+Author: Your Name <you@example.com>
+Section: Music
+Depends: firmware (>= 6.0)
+Icon: file:///Applications/LegacyTune.app/icon.png
