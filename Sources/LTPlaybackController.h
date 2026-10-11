@@ -33,6 +33,7 @@ typedef enum {
 	LTRepeatMode _repeatMode;
 	BOOL _isAwaitingFirstNowPlayingNotification;
 	NSDictionary *_persistentIdToMediaItem; // built lazily, see .m
+	NSInteger _lastRecordedSongId;          // songs.id last counted as a play; stops shuffle toggles double-counting
 }
 
 + (LTPlaybackController *)sharedController;

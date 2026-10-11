@@ -18,4 +18,9 @@
 // Library album grid), ordered by each album's most recent date_added.
 - (NSArray *)recentlyAddedAlbumsWithLimit:(NSUInteger)limit;
 
+// Recently Played — albums ordered by their most recently played song
+// (songs.last_played, written by LTPlaybackController). Empty until
+// something has been played.
+- (NSArray *)recentlyPlayedAlbumsWithLimit:(NSUInteger)limit;
+
 @end

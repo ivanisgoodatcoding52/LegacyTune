@@ -15,7 +15,8 @@
 - (NSString *)displayTitle {
 	if ([_sectionKey isEqualToString:@"favorites"]) return @"Favorites";
 	if ([_sectionKey isEqualToString:@"recently_added"]) return @"Recently Added";
-	return _sectionKey; // fallback, shouldn't normally be hit with only 2 seeded sections
+	if ([_sectionKey isEqualToString:@"recently_played"]) return @"Recently Played";
+	return _sectionKey; // fallback, shouldn't normally be hit with only the seeded sections
 }
 
 - (void)dealloc {

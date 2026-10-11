@@ -8,6 +8,8 @@ static const NSTimeInterval kLTSearchDebounceInterval = 0.25;
 static const NSUInteger kLTSearchResultLimit = 100;
 
 @interface LTSearchViewController (Private)
+- (void)cancelDebounceTimer;
+- (void)debounceFired;
 - (void)searchTextChanged;
 - (void)runSearchJob:(NSDictionary *)job;
 - (void)deliverResults:(NSDictionary *)payload;
@@ -60,21 +62,37 @@ static const NSUInteger kLTSearchResultLimit = 100;
 	[self updateEmptyState];
 }
 
-- (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
+// A one-shot NSTimer is released by the run loop as soon as it fires, so a
+// bare (unretained) ivar would dangle and the next -invalidate would crash.
+// Own the timer while it is pending and clear the ivar whenever it ends.
+- (void)cancelDebounceTimer {
 	[_debounceTimer invalidate];
-	_debounceTimer = [NSTimer scheduledTimerWithTimeInterval:kLTSearchDebounceInterval target:self selector:@selector(searchTextChanged) userInfo:nil repeats:NO];
+	[_debounceTimer release];
+	_debounceTimer = nil;
+}
+
+- (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
+	[self cancelDebounceTimer];
+	_debounceTimer = [[NSTimer scheduledTimerWithTimeInterval:kLTSearchDebounceInterval target:self selector:@selector(debounceFired) userInfo:nil repeats:NO] retain];
+}
+
+- (void)debounceFired {
+	[_debounceTimer release];
+	_debounceTimer = nil;
+	[self searchTextChanged];
 }
 
 - (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar {
 	[searchBar resignFirstResponder];
-	[_debounceTimer invalidate];
+	[self cancelDebounceTimer];
 	[self searchTextChanged];
 }
 
 - (void)searchBarCancelButtonClicked:(UISearchBar *)searchBar {
 	searchBar.text = @"";
 	[searchBar resignFirstResponder];
-	[_debounceTimer invalidate];
+	[self cancelDebounceTimer];
+	_searchGeneration++; // discard any in-flight search
 	[_results release];
 	_results = nil;
 	[_tableView reloadData];
@@ -84,6 +102,7 @@ static const NSUInteger kLTSearchResultLimit = 100;
 - (void)searchTextChanged {
 	NSString *queryText = [_searchBar.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 	if ([queryText length] < 2) {
+		_searchGeneration++; // discard any in-flight search
 		[_results release];
 		_results = nil;
 		[_tableView reloadData];
@@ -105,8 +124,11 @@ static const NSUInteger kLTSearchResultLimit = 100;
 	LTDatabase *backgroundDB = [[LTDatabase alloc] init];
 	[backgroundDB open];
 
-	NSString *likePattern = [NSString stringWithFormat:@"%%%@%%", queryText];
-	NSString *sql = @"SELECT * FROM songs WHERE title LIKE ? OR artist LIKE ? OR album LIKE ? OR genre LIKE ? ORDER BY title COLLATE NOCASE ASC LIMIT ?";
+	NSString *escaped = [queryText stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"];
+	escaped = [escaped stringByReplacingOccurrencesOfString:@"%" withString:@"\\%"];
+	escaped = [escaped stringByReplacingOccurrencesOfString:@"_" withString:@"\\_"];
+	NSString *likePattern = [NSString stringWithFormat:@"%%%@%%", escaped];
+	NSString *sql = @"SELECT * FROM songs WHERE title LIKE ? ESCAPE '\\' OR artist LIKE ? ESCAPE '\\' OR album LIKE ? ESCAPE '\\' OR genre LIKE ? ESCAPE '\\' ORDER BY title COLLATE NOCASE ASC LIMIT ?";
 	NSArray *args = [NSArray arrayWithObjects:likePattern, likePattern, likePattern, likePattern, [NSNumber numberWithUnsignedInteger:kLTSearchResultLimit], nil];
 	NSArray *rows = [backgroundDB executeQuery:sql withArguments:args];
 
@@ -163,7 +185,7 @@ static const NSUInteger kLTSearchResultLimit = 100;
 }
 
 - (void)dealloc {
-	[_debounceTimer invalidate];
+	[self cancelDebounceTimer];
 	[_searchBar release];
 	[_tableView release];
 	[_emptyStateLabel release];

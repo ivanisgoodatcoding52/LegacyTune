@@ -1,9 +1,11 @@
 #import "LTPlaybackController.h"
+#import "LTDatabase.h"
 
 NSString *const LTPlaybackStateDidChangeNotification = @"LTPlaybackStateDidChangeNotification";
 
 @interface LTPlaybackController (Private)
 - (void)ensureMediaItemCache;
+- (NSArray *)playableSubsetOfSongs:(NSArray *)songs startingAtIndex:(NSUInteger *)index;
 - (void)playCurrentIndexFromScratch;
 - (void)playCurrentIndexFromScratchPreservingTime:(NSTimeInterval)preservedTime;
 - (void)nowPlayingItemChanged:(NSNotification *)notification;
@@ -82,9 +84,48 @@ static LTPlaybackController *_sharedController = nil;
 
 #pragma mark - Playing
 
-- (void)playSongs:(NSArray *)songs startingAtIndex:(NSUInteger)index {
-	if ([songs count] == 0 || index >= [songs count]) return;
-	[self ensureMediaItemCache];
+// Our queue indexes into _playbackOrder, but the native player is only
+// handed songs that resolve to a real MPMediaItem. If any song were
+// silently dropped there (deleted from the device since the last scan, or
+// added since the cache was built), the two sequences would drift apart and
+// -nowPlayingItemChanged: would report the wrong "current song". So filter
+// the queue up front instead, and re-map the tapped index.
+- (NSArray *)playableSubsetOfSongs:(NSArray *)songs startingAtIndex:(NSUInteger *)index {
+	for (int attempt = 0; attempt < 2; attempt++) {
+		[self ensureMediaItemCache];
+
+		NSMutableArray *playable = [NSMutableArray arrayWithCapacity:[songs count]];
+		NSUInteger newIndex = 0;
+		for (NSUInteger i = 0; i < [songs count]; i++) {
+			LTSong *song = [songs objectAtIndex:i];
+			if ([_persistentIdToMediaItem objectForKey:song.persistentId] == nil) continue;
+			if (i < *index) newIndex++;
+			[playable addObject:song];
+		}
+
+		// Something missing: the cache may just be stale (library changed
+		// since it was built). Rebuild once and retry before giving up on it.
+		if ([playable count] < [songs count] && attempt == 0) {
+			[_persistentIdToMediaItem release];
+			_persistentIdToMediaItem = nil;
+			continue;
+		}
+
+		if ([playable count] == 0) return nil;
+		if (newIndex >= [playable count]) newIndex = [playable count] - 1;
+		*index = newIndex;
+		return playable;
+	}
+	return nil;
+}
+
+- (void)playSongs:(NSArray *)allSongs startingAtIndex:(NSUInteger)startIndex {
+	if ([allSongs count] == 0 || startIndex >= [allSongs count]) return;
+
+	NSUInteger index = startIndex;
+	NSArray *songs = [self playableSubsetOfSongs:allSongs startingAtIndex:&index];
+	if (songs == nil) return;
+	_lastRecordedSongId = 0; // explicitly starting a song counts as a new play, even if it's the same one
 
 	[_queue release];
 	_queue = [songs mutableCopy];
@@ -306,6 +347,14 @@ static LTPlaybackController *_sharedController = nil;
 		// order, so a natural advance within that collection means
 		// "the next song in _playbackOrder is now playing."
 		_currentIndex++;
+	}
+
+	// Feeds Home's Recently Played section. Guarded so rebuilding the queue
+	// for the same song (shuffle toggle) doesn't count it twice.
+	LTSong *playingSong = [self currentSong];
+	if (playingSong != nil && playingSong.songId != _lastRecordedSongId) {
+		_lastRecordedSongId = playingSong.songId;
+		[[LTDatabase sharedDatabase] recordPlayForSongId:playingSong.songId];
 	}
 
 	[self postStateChanged];

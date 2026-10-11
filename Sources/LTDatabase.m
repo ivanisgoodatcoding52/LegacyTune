@@ -62,16 +62,16 @@ static NSString *const kLTSchemaSQL =
 	");"
 	;
 
-// Home currently ships exactly two sections — Favorites (user-curated) and
-// Recently Added (real data, from songs.date_added). Sections that would
-// need play history (Recently Played, Top Artists/Albums by plays) are
-// deliberately NOT seeded here — they get added once the playback engine
-// exists and last_played/play_count carry real values, rather than
-// showing as empty placeholders now.
+// Home ships Favorites (user-curated), Recently Added (songs.date_added)
+// and Recently Played (songs.last_played, written by LTPlaybackController
+// via -recordPlayForSongId:). Recently Played is hidden by the Home screen
+// until there is at least one played song, so it never shows as an empty
+// placeholder. Top Artists/Albums by play_count could follow the same way.
 static NSString *const kLTDefaultHomeSectionsSQL =
 	@"INSERT INTO home_sections (section_key, sort_order) VALUES "
 	"('favorites', 0),"
-	"('recently_added', 1);"
+	"('recently_added', 1),"
+	"('recently_played', 2);"
 	;
 
 @interface LTDatabase (Private)
@@ -126,6 +126,15 @@ static LTDatabase *_sharedDatabase = nil;
 			NSLog(@"[LTDatabase] failed to seed default home sections: %s", seedError);
 			sqlite3_free(seedError);
 		}
+	} else {
+		// Installs seeded by an earlier version (only favorites +
+		// recently_added) pick up Recently Played here, appended last so the
+		// user's own ordering of the existing sections is untouched.
+		// section_key is UNIQUE, so OR IGNORE makes this a no-op afterwards.
+		sqlite3_exec(_db,
+			"INSERT OR IGNORE INTO home_sections (section_key, sort_order) "
+			"SELECT 'recently_played', COALESCE(MAX(sort_order), -1) + 1 FROM home_sections;",
+			NULL, NULL, NULL);
 	}
 
 	return YES;
@@ -291,6 +300,47 @@ static LTDatabase *_sharedDatabase = nil;
 	sqlite3_finalize(insertStmt);
 	sqlite3_finalize(updateStmt);
 	[self commitTransaction];
+}
+
+- (void)pruneSongsNotInPersistentIDs:(NSArray *)persistentIDs {
+	if (_db == NULL || [persistentIDs count] == 0) return;
+	if (![self beginTransaction]) return;
+
+	// A temp table instead of "NOT IN (?, ?, ...)" — SQLite caps bound
+	// variables per statement (999 on the old builds shipped with these
+	// iOS versions), and libraries are routinely bigger than that.
+	BOOL ok = (sqlite3_exec(_db, "CREATE TEMP TABLE IF NOT EXISTS scan_seen (pid TEXT PRIMARY KEY);", NULL, NULL, NULL) == SQLITE_OK);
+	ok = ok && (sqlite3_exec(_db, "DELETE FROM scan_seen;", NULL, NULL, NULL) == SQLITE_OK);
+
+	sqlite3_stmt *insertStmt = NULL;
+	ok = ok && (sqlite3_prepare_v2(_db, "INSERT OR IGNORE INTO scan_seen (pid) VALUES (?)", -1, &insertStmt, NULL) == SQLITE_OK);
+
+	if (ok) {
+		for (NSString *pid in persistentIDs) {
+			sqlite3_reset(insertStmt);
+			sqlite3_clear_bindings(insertStmt);
+			sqlite3_bind_text(insertStmt, 1, [pid UTF8String], -1, SQLITE_TRANSIENT);
+			if (sqlite3_step(insertStmt) != SQLITE_DONE) { ok = NO; break; }
+		}
+	}
+	if (insertStmt) sqlite3_finalize(insertStmt);
+
+	if (ok) {
+		// Foreign keys are ON (see -open), so playlist_items cascade.
+		ok = (sqlite3_exec(_db, "DELETE FROM songs WHERE persistent_id NOT IN (SELECT pid FROM scan_seen);", NULL, NULL, NULL) == SQLITE_OK);
+	}
+	if (!ok) NSLog(@"[LTDatabase] prune failed: %s", sqlite3_errmsg(_db));
+
+	sqlite3_exec(_db, "DELETE FROM scan_seen;", NULL, NULL, NULL);
+	if (ok) [self commitTransaction]; else [self rollbackTransaction];
+}
+
+- (void)recordPlayForSongId:(NSInteger)songId {
+	if (songId <= 0) return;
+	[self executeUpdate:@"UPDATE songs SET play_count = play_count + 1, last_played = ? WHERE id = ?"
+		withArguments:[NSArray arrayWithObjects:
+			[NSNumber numberWithDouble:[[NSDate date] timeIntervalSince1970]],
+			[NSNumber numberWithInteger:songId], nil]];
 }
 
 - (void)dealloc {

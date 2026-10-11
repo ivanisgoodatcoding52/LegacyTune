@@ -1,12 +1,13 @@
 #import <Foundation/Foundation.h>
 
-// Trimmed scope: 2 fixed sections (favorites, recently_added), reorder
-// only — no hide/show, no adding new sections. See conversation notes.
+// Trimmed scope: 3 fixed sections (favorites, recently_added,
+// recently_played), reorder only — no hide/show, no adding new sections.
+// See conversation notes.
 @interface LTHomeSection : NSObject
 @property (nonatomic, copy) NSString *sectionKey;
 @property (nonatomic, assign) NSInteger sortOrder;
 + (id)sectionWithRow:(NSDictionary *)row;
-- (NSString *)displayTitle; // "Favorites" / "Recently Added", derived from sectionKey
+- (NSString *)displayTitle; // "Favorites" / "Recently Added" / "Recently Played", derived from sectionKey
 @end
 
 // A user-pinned Favorite. itemType is "artist" or "album" only in this

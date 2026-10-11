@@ -112,4 +112,16 @@ static LTHomeStore *_sharedStore = nil;
 	return summaries;
 }
 
+#pragma mark - Recently Played
+
+- (NSArray *)recentlyPlayedAlbumsWithLimit:(NSUInteger)limit {
+	NSString *sql = @"SELECT album, MIN(artist) AS artist, MAX(artwork_path) AS artwork_path, MAX(last_played) AS latest_played "
+		"FROM songs WHERE album != '' AND last_played > 0 GROUP BY album ORDER BY latest_played DESC LIMIT ?";
+	NSArray *rows = [[LTDatabase sharedDatabase] executeQuery:sql withArguments:[NSArray arrayWithObject:[NSNumber numberWithUnsignedInteger:limit]]];
+
+	NSMutableArray *summaries = [NSMutableArray arrayWithCapacity:[rows count]];
+	for (NSDictionary *row in rows) [summaries addObject:[LTAlbumSummary summaryWithRow:row]];
+	return summaries;
+}
+
 @end

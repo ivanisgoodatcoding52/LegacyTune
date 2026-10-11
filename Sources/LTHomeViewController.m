@@ -15,8 +15,12 @@ static const NSUInteger kLTRecentlyAddedLimit = 20;
 - (void)reload;
 - (NSArray *)favoritesCardData;
 - (NSArray *)recentlyAddedCardData;
+- (NSArray *)recentlyPlayedCardData;
+- (NSArray *)albumCardDataFromSummaries:(NSArray *)albums;
 - (void)favoriteTileTapped:(id)sender;
 - (void)albumTileTapped:(id)sender;
+- (void)recentlyPlayedTileTapped:(id)sender;
+- (void)pushAlbumAtIndex:(NSUInteger)index fromAlbums:(NSArray *)albums;
 - (void)manageFavoritesTapped;
 - (void)scannerDidFinish:(NSNotification *)notification;
 @end
@@ -69,8 +73,16 @@ static const NSUInteger kLTRecentlyAddedLimit = 20;
 }
 
 - (void)reload {
+	// Recently Played stays out of the list until something has actually
+	// been played, rather than showing as an empty strip.
+	BOOL hasPlayHistory = ([[[LTHomeStore sharedStore] recentlyPlayedAlbumsWithLimit:1] count] > 0);
+	NSMutableArray *visible = [NSMutableArray array];
+	for (LTHomeSection *section in [[LTHomeStore sharedStore] sectionsOrdered]) {
+		if (!hasPlayHistory && [section.sectionKey isEqualToString:@"recently_played"]) continue;
+		[visible addObject:section];
+	}
 	[_sections release];
-	_sections = [[NSMutableArray alloc] initWithArray:[[LTHomeStore sharedStore] sectionsOrdered]];
+	_sections = [visible retain];
 	[_tableView reloadData];
 }
 
@@ -99,8 +111,7 @@ static const NSUInteger kLTRecentlyAddedLimit = 20;
 	return cardData;
 }
 
-- (NSArray *)recentlyAddedCardData {
-	NSArray *albums = [[LTHomeStore sharedStore] recentlyAddedAlbumsWithLimit:kLTRecentlyAddedLimit];
+- (NSArray *)albumCardDataFromSummaries:(NSArray *)albums {
 	NSMutableArray *cardData = [NSMutableArray arrayWithCapacity:[albums count]];
 	for (LTAlbumSummary *summary in albums) {
 		NSDictionary *card = [NSDictionary dictionaryWithObjectsAndKeys:
@@ -111,6 +122,14 @@ static const NSUInteger kLTRecentlyAddedLimit = 20;
 		[cardData addObject:card];
 	}
 	return cardData;
+}
+
+- (NSArray *)recentlyAddedCardData {
+	return [self albumCardDataFromSummaries:[[LTHomeStore sharedStore] recentlyAddedAlbumsWithLimit:kLTRecentlyAddedLimit]];
+}
+
+- (NSArray *)recentlyPlayedCardData {
+	return [self albumCardDataFromSummaries:[[LTHomeStore sharedStore] recentlyPlayedAlbumsWithLimit:kLTRecentlyAddedLimit]];
 }
 
 #pragma mark - UITableViewDataSource
@@ -132,6 +151,10 @@ static const NSUInteger kLTRecentlyAddedLimit = 20;
 		[cell configureWithTitle:section.displayTitle cardData:[self favoritesCardData]
 			target:self action:@selector(favoriteTileTapped:)
 			titleTarget:self titleAction:@selector(manageFavoritesTapped)];
+	} else if ([section.sectionKey isEqualToString:@"recently_played"]) {
+		[cell configureWithTitle:section.displayTitle cardData:[self recentlyPlayedCardData]
+			target:self action:@selector(recentlyPlayedTileTapped:)
+			titleTarget:nil titleAction:NULL];
 	} else {
 		[cell configureWithTitle:section.displayTitle cardData:[self recentlyAddedCardData]
 			target:self action:@selector(albumTileTapped:)
@@ -156,7 +179,21 @@ static const NSUInteger kLTRecentlyAddedLimit = 20;
 }
 
 - (void)tableView:(UITableView *)tableView moveRowAtIndexPath:(NSIndexPath *)sourceIndexPath toIndexPath:(NSIndexPath *)destinationIndexPath {
-	[[LTHomeStore sharedStore] moveSectionFromIndex:sourceIndexPath.row toIndex:destinationIndexPath.row];
+	// _sections may omit a hidden section (Recently Played with no history),
+	// so translate visible row indices into positions in the full stored
+	// order by section key before telling the store.
+	NSArray *allSections = [[LTHomeStore sharedStore] sectionsOrdered];
+	NSString *movedKey = [(LTHomeSection *)[_sections objectAtIndex:sourceIndexPath.row] sectionKey];
+	NSString *destKey = [(LTHomeSection *)[_sections objectAtIndex:destinationIndexPath.row] sectionKey];
+	NSUInteger fullFrom = NSNotFound, fullTo = NSNotFound;
+	for (NSUInteger i = 0; i < [allSections count]; i++) {
+		NSString *key = [(LTHomeSection *)[allSections objectAtIndex:i] sectionKey];
+		if ([key isEqualToString:movedKey]) fullFrom = i;
+		if ([key isEqualToString:destKey]) fullTo = i;
+	}
+	if (fullFrom != NSNotFound && fullTo != NSNotFound) {
+		[[LTHomeStore sharedStore] moveSectionFromIndex:fullFrom toIndex:fullTo];
+	}
 
 	LTHomeSection *moved = [[_sections objectAtIndex:sourceIndexPath.row] retain];
 	[_sections removeObjectAtIndex:sourceIndexPath.row];
@@ -178,9 +215,7 @@ static const NSUInteger kLTRecentlyAddedLimit = 20;
 	[songList release];
 }
 
-- (void)albumTileTapped:(id)sender {
-	NSUInteger index = [sender tag];
-	NSArray *albums = [[LTHomeStore sharedStore] recentlyAddedAlbumsWithLimit:kLTRecentlyAddedLimit];
+- (void)pushAlbumAtIndex:(NSUInteger)index fromAlbums:(NSArray *)albums {
 	if (index >= [albums count]) return;
 
 	LTAlbumSummary *summary = [albums objectAtIndex:index];
@@ -188,6 +223,14 @@ static const NSUInteger kLTRecentlyAddedLimit = 20;
 		initWithFilterColumn:@"album" value:summary.album title:summary.album];
 	[self.navigationController pushViewController:songList animated:YES];
 	[songList release];
+}
+
+- (void)albumTileTapped:(id)sender {
+	[self pushAlbumAtIndex:[sender tag] fromAlbums:[[LTHomeStore sharedStore] recentlyAddedAlbumsWithLimit:kLTRecentlyAddedLimit]];
+}
+
+- (void)recentlyPlayedTileTapped:(id)sender {
+	[self pushAlbumAtIndex:[sender tag] fromAlbums:[[LTHomeStore sharedStore] recentlyPlayedAlbumsWithLimit:kLTRecentlyAddedLimit]];
 }
 
 - (void)manageFavoritesTapped {

@@ -74,6 +74,12 @@ static LTLibraryScanner *_sharedScanner = nil;
 
 	[backgroundDB upsertSongs:scanResults];
 
+	// Drop rows for songs no longer in the device library. Guarded inside
+	// -pruneSongsNotInPersistentIDs: against an empty scan.
+	NSMutableArray *seenIDs = [NSMutableArray arrayWithCapacity:[scanResults count]];
+	for (NSDictionary *result in scanResults) [seenIDs addObject:[result objectForKey:@"persistentID"]];
+	[backgroundDB pruneSongsNotInPersistentIDs:seenIDs];
+
 	[scanResults release];
 	[backgroundDB close];
 	[backgroundDB release];
